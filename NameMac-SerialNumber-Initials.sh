@@ -1,4 +1,4 @@
-#/bin/zsh
+#!/bin/zsh
 
 ###Sets the computer name to the computer's serial number followed by the user's initials.
 

@@ -1,0 +1,28 @@
+#!/bin/zsh
+
+#############################################################################################################################
+# This script will download the desired macOS installer using the URL that we specify in parameter 4. To name the installer package, specify the macOS version number in parameter 5. Example: 13.4.1. The downloaded package will be named "13.4.1.pkg". It will be saved to /private/tmp. After the package is downloaded, the package is ran to place the macOS installer in the Applications folder. The installer package is then deleted to free up drive space. 
+#############################################################################################################################
+
+# Use the Download Full Installer app from scriptingosx GitHub.
+# https://github.com/scriptingosx/DownloadFullInstaller/releases
+
+# Parameters for Jamf Pro
+downloadURL="$4"  # Obtain this by right-clicking the macOS version you want from the list
+macOSVersion="$5" # Example: 13.4.1
+
+# Download destination
+pathToInstaller=/private/tmp/$macOSVersion.pkg
+
+### Download the macOS installer using the URL obtained from Download Full Installer app.
+echo "Downloading macOS $macOSVersion installer package"
+curl -o $pathToInstaller $downloadURL
+
+### Extract the macOS install app from the downloaded package
+installer -pkg $pathToInstaller -target /
+
+### Delete the installer package to free up space
+rm $pathToInstaller
+
+
+exit 0

@@ -23,6 +23,7 @@ echo "Adding macOS $macOSVersion installer in the Applications folder"
 installer -pkg $pathToInstaller -target /
 
 ### Delete the installer package to free up space
+echo "Removing the macOS installer download file"
 rm $pathToInstaller
 
 

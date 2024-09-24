@@ -1,0 +1,37 @@
+#!/bin/zsh
+
+##################################################################
+# Uses Jamf API to find what site a Mac is assigned to.
+# Fill in your own username, password, and Jamf Pro URL.
+#
+# 9/24/2024 | Howie Isaacks
+##################################################################
+
+# API login
+jamfProURL="https://YourServer.jamfcloud.com"
+username="api_username"
+password="SuperDuperSecretPassword!"
+
+#Jamf API authentication.
+function jamfAPI_auth() {
+	# request auth token
+	authToken=$(/usr/bin/curl \
+--request POST \
+--silent \
+--url "$jamfProURL/api/v1/auth/token" \
+--user "$username:$password" )
+	
+	# parse auth token
+	token=$( /usr/bin/plutil \
+-extract token raw - <<< "$authToken" )
+}
+
+# Run Jamf API authentication
+jamfAPI_auth
+
+################ What is the site assignment? ################
+# Computer serial number
+serialNumber=$(system_profiler SPHardwareDataType | grep Serial | /usr/bin/awk '{ print $4 }')
+site=$(curl -s -H "Accept: text/xml" -H "Authorization: Bearer ${token}" ${jamfProURL}/JSSResource/computers/serialnumber/"$serialNumber" | xmllint --xpath 'string (//computer/general/site/name)' -)
+
+echo $site

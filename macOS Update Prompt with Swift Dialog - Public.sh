@@ -12,7 +12,7 @@ Parameters:
 4 - macOS required version  5 - Release Notes  6 - Timer (in seconds)  7 - Deadline date seconds (epoch time)
 8 - Required macOS major version  9 - Required macOS minor version  10 - URL or file path for Dialog icon
 
-Use the "org" variable to specify your oganization name for the two launch daemons created by this script. The variable
+Use the "org" variable to specify your oganization name for the launch daemon created by this script. The variable
 may not work in the launch daemon creation functions. For these just replace the text manually.
 
 Release notes: https://support.apple.com/en-us/121011
@@ -20,7 +20,13 @@ Release notes: https://support.apple.com/en-us/121011
 For deadline date epoch time value run: 
 date -jf "%Y-%m-%d %H:%M:%S" "2024-07-21 11:00:00" +%s  <--change the year-month-day hour-minute-seconds to the desired values
 
-Users are allowed 3 deferrals. A deadline date is enforced.
+Users are allowed 3 deferrals. A deadline date is enforced. A PLIST file is stored at /usr/local/Management to track
+deferrals. A launch daemon is created to trigger the policy containing this script to run again. Add this script to a Jamf Pro
+policy that uses a custom trigger "update-macos" (or what ever you want to use) that is scoped to all computers with an ongoing
+frequency. To prompt users, use another Jamf Pro policy to run once at check-n with a files and processes payload to run
+"jamf policy -event update-macos".
+
+
 Dialog will switch to aggressive mode after 3 deferrals or the deadline date has passed.
 
 Created: 1/7/2025 | Howie Canterbury

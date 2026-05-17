@@ -1,58 +1,44 @@
 #!/bin/zsh --no-rcs
 
-:<<ABOUT_THIS_SCRIPT
----------------------------------------------------------------------------------------------------
-This script runs from the Post ZTP policy. It performs the following functions:
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
-1 - Stops Jamf agent to prevent policies from running at check-in
+:<<INFO
+----------------------------------------
+TITLE: Post ZTP
+VERSION: 6.0
+PURPOSE: Checks for apps that should have installed during ZTP. Installs any that are missing. Installs remaining apps and configurations.
 
-2 - Runs removal of policy files from enforced macOS update if the Mac enrolled running an outdated macOS version
+Results from the app installs and outdated macOS enrollment checks are recorded to PLISTs.
+This script was intended to be used with a ZTP success/fail workflow. A PLIST is created at the end of the ZTP process that records the success or fail
+of app installs. This script will check that PLIST to look for any apps that failed, and if they were installed successfully by this script, the PLIST is updated
+to show that the apps were installed.
 
-3 - Checks the computer name and sets to the correct name if it was not set correctly
+Edit the app_array variables in check_ztp_apps, check_post_ztp_apps, and check_remediated_apps with your own apps, app file paths, and Jamf Pro policy custom triggers.
 
-4 - Checks if the Mac was successfully updated if it enrolled running an outdated macOS version
+4/15/2026 | Howie Canterbury
+----------------------------------------
+INFO
 
-5 - Checks if all ZTP apps installed and installs any that are missing
+# SCRIPT GLOBAL VARIABLES
+# -----------------------------------
+script_version="6.0"
+script_name="${0:t:r}"
+currentUser=$(/usr/bin/stat -f "%Su" /dev/console)
+flag="/Users/$currentUser/.Post_ZTP_Ran"
 
-6 - Installs remaining apps and company fonts
-
-7 - Runs a check if any failed ZTP installs have been remediated
-
-8 - Deploys Platform Single Sign-on
-
-9 - Starts the Jamf agent
-
-10 - Runs inventory
-
-USE JAMF PARAMETER 4 TO SPECIFY THE REQUIRED MAJOR MACOS VERSION
-
-VERSION 5.3
-Added check for user logged in with platform single sign-on. If user is logged in PSSO will not
-be deployed.
-
-11/25/2025 | Howie Canterbury
----------------------------------------------------------------------------------------------------
-ABOUT_THIS_SCRIPT
-
-# Log function
-logFile="/var/log/Post-ZTP.log"
+# LOG FUNCTION
+# -----------------------------------
+logFile="/private/var/log/Post-ZTP.log"
 updateLog() {
-	[[ ! -f "$logFile" ]] && touch "$logFile"
-	echo -e "$(date +'%Y-%m-%d %H:%M:%S') - $1" | tee -a "$logFile"
+	local message="$1"
+	local timestamp
+	timestamp=$(/bin/date "+%Y-%m-%d %H:%M:%S")
+
+	echo "${timestamp} | ${message}" | /usr/bin/tee -a "$logFile"
 }
 
-# Create management folder if not present - DEPRECATED
-management_folder() {
-	managementFolder="/usr/local/Management"
-	if [ ! -d "$managementFolder" ]; then
-		mkdir -p "$managementFolder"
-		/bin/chmod 755 -R "$managementFolder"
-	fi
-}
-
-########################################################
-#                 Jamf Pro functions                   #
-########################################################
+# JAMF PRO FUNCTIONS
+# -----------------------------------
 
 # Jamf agent
 jamfAgent="/usr/local/jamf/bin/jamf"
@@ -70,8 +56,8 @@ stop_Jamf_launchdaemon() {
 	local jamflaunchDaemon="/Library/LaunchDaemons/com.jamfsoftware.task.1.plist"
 	# Stop the Jamf launch daemon to prevent other policies from running
 	if [[ $(/bin/launchctl list | grep com.jamfsoftware.task.E) ]]; then
-	updateLog "Stopping Jamf launch daemon"
-	/bin/launchctl bootout system "${jamflaunchDaemon}"
+		updateLog "Stopping Jamf launch daemon"
+		/bin/launchctl bootout system "${jamflaunchDaemon}"
 	fi
 }
 
@@ -81,12 +67,12 @@ start_Jamf_launchdaemon() {
 	local jamflaunchDaemon="/Library/LaunchDaemons/com.jamfsoftware.task.1.plist"
 	# Start the Jamf launch daemon
 	if ! [[ $(/bin/launchctl list | grep com.jamfsoftware.task.E) ]]; then
-	updateLog "Starting Jamf launch daemon"
-	/bin/launchctl bootstrap system "${jamflaunchDaemon}"
+		updateLog "Starting Jamf launch daemon"
+		/bin/launchctl bootstrap system "${jamflaunchDaemon}"
 	fi
 }
 
-# Check if Jamf launch daemon is running
+# Check if Jamf launch daemon is running - NOT IN CURRENT USE
 check_jamf_launchdaemon() {
 	updateLog "Checking Jamf launch daemon status..."
 	if [[ $(/bin/launchctl list | grep com.jamfsoftware.task.E) ]]; then
@@ -98,8 +84,9 @@ check_jamf_launchdaemon() {
 # Check computer name; rename to serial if needed
 check_computer_name() {
 	updateLog "Checking if computer name was set correctly..."
-	local serial=$(system_profiler SPHardwareDataType | grep Serial | /usr/bin/awk '{ print $4 }')
+	local serial=$(ioreg -rd1 -c IOPlatformExpertDevice | /usr/bin/awk -F\" '/IOPlatformSerialNumber/{print $4}')
 	local computer_name=$(hostname)
+	updateLog "Current computer name is ${computer_name}"
 	if [[ "$computer_name" = "$serial" ]]; then
 		updateLog "Computer name setting successful"
 	else
@@ -108,84 +95,11 @@ check_computer_name() {
 	fi
 }
 
-########################################################
-#  macOS update enforcement during enrollment cleanup  #
-########################################################
-
-# Check for and remove files from outdated macOS enrollment policy
-enrollment_update_cleanup() {
-	updateLog "Looking for outdated macOS enforced update policy files and deleting them..."
-	local enrollment_update=(
-		"/Library/LaunchDaemons/com.cbre.enrollment.sym-auto.plist"
-		"/Library/LaunchDaemons/com.cbre.macOS-Outdated.plist"
-		"/usr/local/Management/macOSOutdatedAlert.sh"
-		"/usr/local/Management/symLaunch.sh"
-	)
-	# Unload launch daemons
-	if [[ $(/bin/launchctl list | grep com.cbre.enrollment.sym-auto) ]]; then
-	/bin/launchctl remove "com.cbre.enrollment.sym-auto" 2>/dev/null
-	fi
-	
-	if [[ $(/bin/launchctl list | grep ccom.cbre.macOS-Outdated) ]]; then
-	/bin/launchctl remove "com.cbre.macOS-Outdated" 2>/dev/null
-	fi
-	
-	local found_any=0
-	
-	# Delete policy files
-	for file in "${enrollment_update[@]}"; do
-		if [[ -f "$file" ]]; then
-			updateLog "Found file at "$file". Deleting..."
-			rm -f "$file"
-			found_any=1
-		fi
-	done
-	
-	if [[ $found_any -eq 0 ]]; then
-		updateLog "No policy files found"
-	fi
-}
-
-##############################################################
-#  Check if macOS upgrade was a success and report to PLIST  #
-##############################################################
-
-# Outdated macOS update enforcement
-outdated_macos_plist="/usr/local/Management/com.cbre.outdated.macos.plist"
-req_macOS="${4:-15}" # Use Jamf parameter 4 to specify required major macOS version; use 15 if not specified in the policy
-current_OS=$(/usr/bin/sw_vers -productVersion)
-currentOS_major=$(echo "$current_OS" | awk -F. '{print $1}')
-
-# Write updates to outdated macOS PLIST
-update_plist_outdated () {
-	# Write new values only if the PLIST is present
-	if [[ -f "$outdated_macos_plist" ]]; then
-		# Command to set a key and value to PLIST
-		/usr/libexec/PlistBuddy -c "Set :${1} ${2}" "$outdated_macos_plist"
-	fi
-}
-
-# Check if macOS was updated to the required version and report
-check_os() {
-	updateLog "Checking if macOS has been updated to the required version"
-	if [[ "$currentOS_major" -ge "$req_macOS" ]]; then
-		updateLog "macOS was updated to the required version"
-		update_plist_outdated FinalOS "${current_OS}"
-		update_plist_outdated Remediated Yes
-	else
-		updateLog "macOS was not updated to the required version"
-		update_plist_outdated FinalOS "${current_OS}"
-		update_plist_outdated Remediated No
-	fi
-}
-
-##############################################################
-#    Check ZTP app installs; install any that are missing    #
-#    Install remaining apps, agents, and fonts	             #
-##############################################################
+# CHECK ZTP APP INSTALLS; INSTALL REMAINING APPS; CHECK FOR REMEDIATED FAILED INSTALLS
+# -----------------------------------
 
 # ZTP PLIST
-ztp_check_plist="/usr/local/Management/com.cbre.ztp.plist"
+ztp_check_plist="/usr/local/Management/com.eleven9.ztp.plist"
 failed_installs=$(xmllint --xpath '//key[.="FailedInstalls"]/following-sibling::array[1]/string' "$ztp_check_plist" 2>/dev/null | \
 	sed -n 's:.*<string>\(.*\)</string>.*:\1:p')
 
@@ -209,7 +123,6 @@ check_ztp_apps() {
 		"Microsoft PowerPoint","/Applications/Microsoft PowerPoint.app","install-powerpoint"
 		"Microsoft Teams","/Applications/Microsoft Teams.app","install-teams"
 		"Microsoft Word","/Applications/Microsoft Word.app","install-word"
-		"Company Portal","/Applications/Company Portal.app","install-companyportal"
 		"Zoom","/Applications/zoom.us.app","install-zoom"
 		"ForeScout Secure Connector","/Applications/ForeScout SecureConnector.app","install-forescout"
 		"Global Protect","/Applications/GlobalProtect.app","install-globalprotect"
@@ -218,25 +131,23 @@ check_ztp_apps() {
 	)
 	
 	# Count of ZTP apps
-	ztp_apps=$(echo "$(( ${#app_array[@]} / 3 ))")
-	echo $ztp_apps
+	local ztp_apps=$(echo ${#app_array[@]})
+	echo "Expect ${ztp_apps} apps"
 	
 	# Run checks; report status; install if needed
-	updateLog "Checking if all ZTP apps installed. Will install missing apps if needed."
+	updateLog "Checking if all ZTP apps installed. Apps that failed to install during ZTP will be installed."
 	for app in "${app_array[@]}"; do
 		local app_name=$(echo "$app" | cut -d ',' -f1)
 		local app_path=$(echo "$app" | cut -d ',' -f2)
 		local install_policy=$(echo "$app" | cut -d ',' -f3)
-		#updateLog "Checking ${app_name}"
 		if [[ -d "$app_path" ]] || [[ -f "$app_path" ]]; then
-			updateLog "${app_name} Installed"
+			updateLog "${app_name} - Installed"
 		elif  [[ ! -d "$app_path" ]] || [[ ! -f "$app_path" ]]; then
-			updateLog "${app_name} not installed. Running policy: $install_policy"
+			updateLog "${app_name} - not installed. Running policy: ${install_policy}"
 			jamfPolicy $install_policy
 		fi
 	done
 }
-
 
 # Post ZTP apps, angents, and fonts
 check_post_ztp_apps() {
@@ -250,33 +161,34 @@ check_post_ztp_apps() {
 		"Noto Serif Font","/Library/Fonts/NotoSerifCJKjp-Regular.otf","install-notoserif"
 		"Space Mono Font","/Library/Fonts/SpaceMono-Regular.ttf","install-spacemono"
 		"Tenable","/Library/NessusAgent/run/sbin/nessus-agent-module","install-tenable"
-		"Nudge","/Applications/Utilities/Nudge.app","install-nudge"
 		"Proofpoint DLP","/Library/PEA/agent/ITProtector.app","install-ppdlp"
+		"Company Portal","/Applications/Company Portal.app","install-companyportal"
+		"Inventory every 4 hours","/Library/Scripts/Send_Inventory.sh","install-inventoryevery4"
 	)
 	
+	local post_ztp_apps=$(echo ${#app_array[@]})
+	echo "Expect ${post_ztp_apps} post ZTP apps"
+	
 	# Run checks; report status; install if needed
-	updateLog "Installing remaining company apps if not already installed."
+	updateLog "Installing remaining company apps and configurations if not already installed."
 	for app in "${app_array[@]}"; do
 		local app_name=$(echo "$app" | cut -d ',' -f1)
 		local app_path=$(echo "$app" | cut -d ',' -f2)
 		local install_policy=$(echo "$app" | cut -d ',' -f3)
 		#updateLog "Checking ${app_name}"
 		if [[ -d "$app_path" ]] || [[ -f "$app_path" ]]; then
-			updateLog "${app_name} installed"
+			updateLog "${app_name} - installed"
 		elif  [[ ! -d "$app_path" ]] || [[ ! -f "$app_path" ]]; then
-			updateLog "${app_name} not installed. Running policy: $install_policy"
+			updateLog "${app_name} - not installed. Running policy: $install_policy"
 			jamfPolicy $install_policy
 		fi
 	done
 }
 
-##################################################################
-#  	Check if failed installs (if any) were remediated and report #
-##################################################################
-
 # Check if failed app installs have been remediated
 check_remediated_apps() {
-	app_array=(
+	if [[ -f "$failed_installs" ]]; then
+	local app_array=(
 		"Google Chrome","/Applications/Google Chrome.app"
 		"Microsoft Edge","/Applications/Microsoft Edge.app"
 		"Microsoft Excel","/Applications/Microsoft Excel.app"
@@ -286,7 +198,6 @@ check_remediated_apps() {
 		"Microsoft PowerPoint","/Applications/Microsoft PowerPoint.app"
 		"Microsoft Teams","/Applications/Microsoft Teams.app"
 		"Microsoft Word","/Applications/Microsoft Word.app"
-		"Company Portal","/Applications/Company Portal.app"
 		"Zoom","/Applications/zoom.us.app"
 		"ForeScout Secure Connector","/Applications/ForeScout SecureConnector.app"
 		"Global Protect","/Applications/GlobalProtect.app"
@@ -295,13 +206,13 @@ check_remediated_apps() {
 	)
 	
 	# Count of ZTP apps
-	ztp_apps=$(echo "${#app_array[@]}")
+	local ztp_apps=$(echo "${#app_array[@]}")
 	
 	updateLog "Checking that all app install failures have been remediated."
 	for app in "${app_array[@]}"; do
 		local app_name=$(echo "$app" | cut -d ',' -f1)
 		local app_path=$(echo "$app" | cut -d ',' -f2)
-		#updateLog "Checking ${app_name}"
+		updateLog "Checking ${app_name}"
 		if [[ -d "$app_path" ]] || [[ -f "$app_path" ]]; then
 			((new_installed_count++))
 		elif  [[ ! -d "$app_path" ]] || [[ ! -f "$app_path" ]]; then
@@ -335,74 +246,96 @@ check_remediated_apps() {
 		# Update PLIST permissions
 		chmod 644 $ztp_check_plist
 	fi
+	else
+		return 0
+	fi
 }
 
-##################################################################
-#  	 				Platform Single Sign-on 					 #
-##################################################################
-
-# Check if user is registered with PSSO
-check_psso_status() {
-	local currentUser=$( /usr/sbin/scutil <<< "show State:/Users/ConsoleUser" | /usr/bin/awk -F': ' '/[[:space:]]+Name[[:space:]]:/ { if ( $2 != "loginwindow" ) { print $2 }}' )
-	local psso_status=$(dscl . read /Users/$currentUser dsAttrTypeStandard:AltSecurityIdentities | awk -F'SSO:' '/PlatformSSO/ {print $2}')
-		
-		# PSSO sign-on status
-		if [[ -n "$psso_status" ]]; then
-			psso_logged_in="Yes"
-			username=$(echo "$psso_status")
-		else
-			psso_logged_in="No"
-		fi
-		}
-
-# Deploy platform single sign-on
-deploy_psso() {
-	updateLog "Deploying Platform Single Sign-on"
-	jamfPolicy "deploy-psso"
-}
-
-######################################################
-#               Run the functions!	                 #
-######################################################
-
-# 1 - Stop Jamf launch daemon to prevent policies from running at check-in
-	stop_Jamf_launchdaemon 
-
-# 2 - Check for and remove enforced macOS update policy files (if the Mac enrolled with and outdated OS)
-	enrollment_update_cleanup
+# CHECK FOR AND DELETE PSSO AND ONEDRIVE SETUP PROMPT FILES
+# -----------------------------------
+delete_psso_onedrive_setup() {
+	prompt_files=(
+		"/Library/LaunchDaemons/com.eleven9.psso-onedrive.plist"
+		"/private/var/log/PSSO-OneDrive-LaunchD.log"
+		"/private/var/log/PSSO-OneDrive-Error.log"
+	)
 	
-# 3 - Check computer name
+	setup_done="/Users/$currentUser/.PSSO_OneDrive_Done"
+	
+	if [[ -f "$setup_done" ]]; then
+	updateLog "Checking for PSSO and OneDrive setup prompt files"
+	
+		# Check if launch daemon is running
+		if [[ $(/bin/launchctl list | grep com.eleven9.psso-onedrive) ]]; then
+			updateLog "PSSO and OneDrive setup launch daemon found. Unloading."
+			/bin/launchctl bootout system /Library/LaunchDaemons/com.eleven9.psso-onedrive.plist
+		fi
+		
+		found_file="0"
+		
+		for file in "${prompt_files[@]}"; do
+			if [[ -f "$file" ]]; then
+				updateLog "Found file at ${file}. Deleting..."
+				rm -f "$file"
+				found_file="1"
+			fi
+		done
+		
+		if [[ "$found_file" == "0" ]]; then
+			updateLog "No PSSO and OneDrive setup files found"
+		fi
+	fi
+}
+
+# WRITE FLAG FILE TO NOTIFY SCRIPT HAS ALREADY RUN
+# -----------------------------------
+write_flag() {
+	updateLog "Writing flag file to notify that this script has already run"
+	local currentUser=$(/usr/bin/stat -f "%Su" /dev/console)
+	local flag="/Users/$currentUser/.Post_ZTP_Ran"
+	
+	if [[ ! -f "$flag" ]]; then
+		touch "${flag}"
+	fi
+}
+
+# MAIN FUNCTION
+# -----------------------------------
+main() {
+	# Check if this script has already run
+	if [[ -f "$flag" ]]; then
+		updateLog "Found flag file at ${flag}. This policy has already run. Exiting"
+		exit 0
+	fi
+	
+	# Start Post ZTP
+	updateLog "Running script ${script_name}"
+	
+	# Stop Jamf launch daemon
+	stop_Jamf_launchdaemon 
+	sleep 10
+	
+	# Check computer name
 	check_computer_name
 	
-# 4 - Check if macOS was updated (if the Mac enrolled with and outdated OS)
-	if [[ -f "$outdated_macos_plist" ]]; then
-		check_os
-	fi
-
-# 5 - Run ZTP apps install check and install any not installed
+	# Run check if ZTP apps installed; install any that are missing
 	check_ztp_apps
 	
-# 6 - Run post ZTP apps check and install any not installed
+	# Run check if any failed ZTP installs were remediated
+	check_remediated_apps
+	
+	# Install remaining apps and fonts
 	check_post_ztp_apps
 	
-# 7 - Run check for remediated failed ZTP apps installs
-	if [[ -n "$failed_installs" ]]; then
-		check_remediated_apps
-	elif [[ -z "$failed_installs" ]]; then
-		updateLog "No failed installs listed. Continuing..."
-	fi
-
-# 8 - Deploy Platform Single Sign-on if not registered
-check_psso_status
-if [[ "$psso_logged_in" == "No" ]]; then
-	deploy_psso
-elif [[ "$psso_logged_in" == "Yes" ]]; then
-	updateLog "User is registered with PSSO"
-fi
+	# Write flag file
+	write_flag
 	
-# 9 - Start Jamf launch daemon
+	# Start Jamf launch daemon
 	start_Jamf_launchdaemon
-	
-# 10 - Run inventory
-	updateLog "All done! Did I leave the oven on?"
-	"$jamfAgent" recon
+	sleep 10
+}
+
+# RUN ALL FUNCTIONS
+main "$@"
+
+updateLog "App installs and configurations complete"
